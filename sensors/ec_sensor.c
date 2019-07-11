@@ -227,7 +227,7 @@ static void ec_saadc_init(void)
 
   ret_code_t err_code;
   nrf_saadc_channel_config_t channel_config =
-      NRFX_SAADC_DEFAULT_CHANNEL_CONFIG_SE(NRF_SAADC_INPUT_AIN0);
+      NRFX_SAADC_DEFAULT_CHANNEL_CONFIG_SE(NRF_SAADC_INPUT_AIN3);
   channel_config.burst = NRF_SAADC_BURST_ENABLED;
 
   /* Configure SAADC */
