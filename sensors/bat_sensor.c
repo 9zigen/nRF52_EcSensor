@@ -63,73 +63,37 @@ static void go_to_sleep()
 }
 #endif
 
-void in_pin_handler(nrfx_gpiote_pin_t pin, nrf_gpiote_polarity_t action)
-{
-  if (pin == CHARGE_SENSE_PIN)
-  {
-    bool charge = !nrf_gpio_pin_read(CHARGE_SENSE_PIN);
-    if (charge)
-      led_indication_set_color(0x8000, 0, 0, 0);
-    else
-      led_indication_set_color(0, 0, 0x8000, 0);
-
-    NRF_LOG_INFO("CHARGE event: %d", charge);
-
-  }
-}
-
-void charge_sense_init(void)
-{
-  ret_code_t err_code;
-
-  if (!nrfx_gpiote_is_init())
-  {
-    err_code = nrfx_gpiote_init();
-    APP_ERROR_CHECK(err_code);
-  }
-
-  nrfx_gpiote_in_config_t in_config = NRFX_GPIOTE_CONFIG_IN_SENSE_TOGGLE(true);
-  in_config.hi_accuracy = false; /* Low Power */
-  in_config.pull = NRF_GPIO_PIN_PULLUP;
-
-  err_code = nrfx_gpiote_in_init(CHARGE_SENSE_PIN, &in_config, in_pin_handler);
-  APP_ERROR_CHECK(err_code);
-
-  nrfx_gpiote_in_event_enable(CHARGE_SENSE_PIN, true);
-
-}
-
-
-/* Standard discharge curve
- * http://www.farnell.com/datasheets/1475807.pdf
+/*
+ * The discharge curve for CR2032 is non-linear. In this model it is split into
+ *           4 linear sections:
+ *           - Section 1: 3.0V - 2.9V = 100% - 42% (58% drop on 100 mV)
+ *           - Section 2: 2.9V - 2.74V = 42% - 18% (24% drop on 160 mV)
+ *           - Section 3: 2.74V - 2.44V = 18% - 6% (12% drop on 300 mV)
+ *           - Section 4: 2.44V - 2.1V = 6% - 0% (6% drop on 340 mV)
  * */
 static uint8_t battery_level(const uint16_t mvolts)
 {
   uint8_t battery_level;
 
-  if (mvolts >= 4200)
+  if (mvolts >= 3000)
   {
     battery_level = 100;
   }
-  else if (mvolts > 3900)
+  else if (mvolts > 2900)
   {
-    battery_level = (uint8_t) (100 - (float)(4200 - mvolts) / 15);
+    battery_level = 100 - ((3000 - mvolts) * 58) / 100;
   }
-  else if (mvolts > 3850)
+  else if (mvolts > 2740)
   {
-    battery_level = (uint8_t) (80 - (float)(3900 - mvolts) / 2.45);
+    battery_level = 42 - ((2900 - mvolts) * 24) / 160;
   }
-  else if (mvolts > 3750)
+  else if (mvolts > 2440)
   {
-    battery_level = (uint8_t) (60 - (float)(3850 - mvolts) / 4.95);
+    battery_level = 18 - ((2740 - mvolts) * 12) / 300;
   }
-  else if (mvolts > 3650)
+  else if (mvolts > 2100)
   {
-    battery_level = (uint8_t) (40 - (float)(3750 - mvolts) / 4.95);
-  }
-  else if (mvolts > 3300)
-  {
-    battery_level = (uint8_t) (20 - (float)(3650 - mvolts) / 17.45);
+    battery_level = 6 - ((2440 - mvolts) * 6) / 340;
   }
   else
   {
@@ -150,7 +114,7 @@ static void saadc_sampling_event_init(void)
   APP_ERROR_CHECK(err_code);
 
   /* setup m_timer for compare event every 1000us - 1 khz */
-  uint32_t ticks = nrfx_timer_ms_to_ticks(&m_timer, 500);
+  uint32_t ticks = nrfx_timer_ms_to_ticks(&m_timer, 100);
   nrfx_timer_extended_compare(&m_timer,
                               NRF_TIMER_CC_CHANNEL0,
                               ticks,
@@ -201,8 +165,14 @@ static void saadc_callback(nrf_drv_saadc_evt_t const * p_event)
     err_code = nrfx_saadc_buffer_convert(p_event->data.done.p_buffer, SAMPLES_IN_BUFFER);
     APP_ERROR_CHECK(err_code);
 
+    int i;
+    for (i = 0; i < SAMPLES_IN_BUFFER; i++)
+    {
+      NRF_LOG_INFO("BAT SAADC RAW   %d mv: %d", p_event->data.done.p_buffer[i], ADC_RESULT_IN_MILLI_VOLTS(p_event->data.done.p_buffer[1]));
+    }
+
     /* use only second value */
-    bat_milli_volts = ADC_RESULT_IN_MILLI_VOLTS(p_event->data.done.p_buffer[1]) * BAT_RESISTOR_DEVIDER;
+    bat_milli_volts = ADC_RESULT_IN_MILLI_VOLTS(p_event->data.done.p_buffer[1]);
     bat_capacity = battery_level(bat_milli_volts);
 
     NRF_LOG_INFO("BAT  mv: %d", bat_milli_volts);
@@ -227,14 +197,13 @@ static void bat_saadc_init() {
 
   ret_code_t err_code;
   nrf_saadc_channel_config_t channel_config =
-      NRFX_SAADC_DEFAULT_CHANNEL_CONFIG_SE(NRF_SAADC_INPUT_AIN7);
-  channel_config.acq_time = NRF_SAADC_ACQTIME_10US;
+      NRFX_SAADC_DEFAULT_CHANNEL_CONFIG_SE(NRF_SAADC_INPUT_VDD);
 
   /* Configure SAADC */
   nrfx_saadc_config_t saadc_config;
-  saadc_config.low_power_mode = true;
+//  saadc_config.low_power_mode = true;
   saadc_config.resolution = NRF_SAADC_RESOLUTION_12BIT; //Set SAADC resolution to 12-bit. This will make the SAADC output values from 0 (when input voltage is 0V) to 2^12=2048 (when input voltage is 3.6V for channel gain setting of 1/6).
-  saadc_config.oversample = NRF_SAADC_OVERSAMPLE_DISABLED;  //Set oversample to 128x. This will make the SAADC output a single averaged value when the SAMPLE task is triggered 128 times.
+  saadc_config.oversample = NRF_SAADC_OVERSAMPLE_DISABLED;    //Set oversample to 4x. This will make the SAADC output a single averaged value when the SAMPLE task is triggered 128 times.
   saadc_config.interrupt_priority = APP_IRQ_PRIORITY_LOW;
 
   err_code = nrfx_saadc_init(&saadc_config, saadc_callback);
@@ -255,9 +224,6 @@ static void bat_saadc_init() {
 
 void bat_sensor_init(void)
 {
-  nrf_gpio_cfg_output(BAT_ON);
-  nrf_gpio_pin_set(BAT_ON);
-
   bat_saadc_init();
   saadc_sampling_event_init();
   saadc_sampling_event_enable();
@@ -268,10 +234,6 @@ void bat_sensor_deinit(void)
   saadc_sampling_event_disable();
   NVIC_ClearPendingIRQ(SAADC_IRQn);
   nrfx_saadc_uninit();
-
-//  nrf_gpio_cfg_input(BAT_ON, NRF_GPIO_PIN_NOPULL);
-  nrf_gpio_pin_clear(BAT_ON);
-
 }
 
 /* get Battery voltage */
