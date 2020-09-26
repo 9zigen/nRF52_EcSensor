@@ -60,7 +60,7 @@ static void saadc_sampling_event_init(void)
   APP_ERROR_CHECK(err_code);
 
   /* setup m_timer for compare event every 1000us - 1 khz */
-  uint32_t ticks = nrfx_timer_us_to_ticks(&m_timer, 120);
+  uint32_t ticks = nrfx_timer_us_to_ticks(&m_timer, 2000);
   nrfx_timer_extended_compare(&m_timer,
                               NRF_TIMER_CC_CHANNEL0,
                               ticks,
@@ -109,8 +109,8 @@ static void saadc_callback(nrfx_saadc_evt_t const * p_event)
 
     err_code = nrfx_saadc_buffer_convert(p_event->data.done.p_buffer, SAMPLES_IN_BUFFER);
     APP_ERROR_CHECK(err_code);
-    int i;
-    for (i = 0; i < SAMPLES_IN_BUFFER; i++)
+
+    for (uint8_t i = 0; i < p_event->data.done.size; i++)
     {
       NRF_LOG_INFO("NTC SAADC RAW   %d", p_event->data.done.p_buffer[i]);
     }
@@ -118,7 +118,7 @@ static void saadc_callback(nrfx_saadc_evt_t const * p_event)
     ntc_milli_volts = ADC_RESULT_IN_MILLI_VOLTS(p_event->data.done.p_buffer[1]);
 
     NRF_LOG_INFO("NTC  mv : %d", ntc_milli_volts);
-    NRF_LOG_INFO("NTC Temp: " NRF_LOG_FLOAT_MARKER, NRF_LOG_FLOAT(ntc_get_temperature()));
+    NRF_LOG_INFO("NTC Temp: " NRF_LOG_FLOAT_MARKER, NRF_LOG_FLOAT(get_ntc_temperature()));
 
     ntc_sensor_deinit();
     set_sensor_ready(TEMPERATURE_SENSOR_READY);
@@ -137,13 +137,14 @@ static void ntc_saadc_init() {
   /* Configure SAADC */
   nrfx_saadc_config_t saadc_config;
 //  saadc_config.low_power_mode = true;
-  saadc_config.resolution = NRF_SAADC_RESOLUTION_12BIT; //Set SAADC resolution to 12-bit. This will make the SAADC output values from 0 (when input voltage is 0V) to 2^12=2048 (when input voltage is 3.6V for channel gain setting of 1/6).
-  saadc_config.oversample = NRF_SAADC_OVERSAMPLE_32X;  //Set oversample to 128x. This will make the SAADC output a single averaged value when the SAMPLE task is triggered 128 times.
+  saadc_config.resolution = NRF_SAADC_RESOLUTION_12BIT;       //Set SAADC resolution to 12-bit. This will make the SAADC output values from 0 (when input voltage is 0V) to 2^12=2048 (when input voltage is 3.6V for channel gain setting of 1/6).
+  saadc_config.oversample = NRF_SAADC_OVERSAMPLE_16X;          //Set oversample to 32x. This will make the SAADC output a single averaged value when the SAMPLE task is triggered 128 times.
   saadc_config.interrupt_priority = APP_IRQ_PRIORITY_LOW;
 
   err_code = nrfx_saadc_init(&saadc_config, saadc_callback);
   APP_ERROR_CHECK(err_code);
 
+  channel_config.burst = NRF_SAADC_BURST_ENABLED;
   err_code = nrfx_saadc_channel_init(0, &channel_config);
   APP_ERROR_CHECK(err_code);
 
@@ -152,8 +153,6 @@ static void ntc_saadc_init() {
 
   err_code = nrfx_saadc_buffer_convert(m_buffer_pool[1], SAMPLES_IN_BUFFER);
   APP_ERROR_CHECK(err_code);
-
-//  nrfx_saadc_calibrate_offset()
 
 }
 
@@ -178,18 +177,39 @@ void ntc_sensor_deinit(void)
 
 }
 
-/* get Battery voltage */
 void read_ntc_sensor()
 {
   ntc_sensor_init();
 }
 
-double ntc_get_temperature()
+/* get Battery voltage */
+void read_ntc_temperature()
+{
+  ntc_sensor_init();
+}
+
+double get_sd_temperature()
+{
+  static int32_t temperature;
+  ret_code_t err_code;
+
+  err_code = sd_temp_get(&temperature); /* in points of 0.25`C, need devise by 4 */
+  APP_ERROR_CHECK(err_code);
+
+  return (double)temperature / 4.0;
+}
+
+double get_ntc_temperature()
 {
   double battery_milli_volts = get_battery_milli_volts();
   if (battery_milli_volts == 0)
     battery_milli_volts = 3300.0;
 
+  /* wrong data from ntc sensor */
+  if (ntc_milli_volts > battery_milli_volts || ntc_milli_volts == 0)
+  {
+    return get_sd_temperature();
+  }
   /* Here we calculate the thermistor’s resistance */
   double r_thermistor = BALANCE_RESISTOR * ( (float)(battery_milli_volts / ntc_milli_volts) - 1);
 
@@ -197,18 +217,6 @@ double ntc_get_temperature()
             (BETA + ROOM_TEMP * log(r_thermistor / NTC_25T_RESISTANCE));
 
   double temperature_celsius = temperature_kelvin - 273.15;  // convert kelvin to celsius
-
-  /* possible NTC disconnected, get current temperature from MCU */
-  if (temperature_celsius < 0)
-  {
-    static int32_t temperature;
-    ret_code_t err_code;
-
-    err_code = sd_temp_get(&temperature); /* in points of 0.25`C, need devise by 4 */
-    APP_ERROR_CHECK(err_code);
-
-    temperature_celsius = (double)temperature / 4.0;
-  }
 
   return temperature_celsius;
 }

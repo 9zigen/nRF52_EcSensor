@@ -6,6 +6,8 @@
 #include <boards.h>
 #include <ble_bas.h>
 #include <sensors/include/ntc_temperature_sensor.h>
+#include <sensors/include/bat_sensor.h>
+#include <include/storage.h>
 #include "nrf_log.h"
 #include "nrf_log_ctrl.h"
 #include "nrf_log_default_backends.h"
@@ -29,12 +31,13 @@
 #define ADC_RESULT_IN_MILLI_VOLTS(ADC_VALUE)\
         ((((ADC_VALUE) * ADC_REF_VOLTAGE_MV) / ADC_RES_12BIT) * ADC_COMPENSATION)
 
-#define SAMPLES_IN_BUFFER     2
+#define SAMPLES_IN_BUFFER     8
 #define ADC_COMPENSATION      6
 #define ADC_RES_12BIT         4095
 #define ADC_REF_VOLTAGE_MV    600
+#define SINK_PIN_RESISTANCE   79
 #define TEMPERATURE_COMP      0.02f
-#define ONE_POINT_CALIBRATION_SOLUTION_US 1000
+#define OPEN_CIRCUITS_MV_DROP 12
 
 /* cell constant K = distance between the electrodes [m] / effective area of the electrodes [m2] */
 #define PROBE_K               1
@@ -43,6 +46,16 @@
 static nrf_saadc_value_t      m_buffer_pool[2][SAMPLES_IN_BUFFER];
 uint16_t ec_milli_volts     = 0;
 uint16_t resistance         = 0;
+
+/* REF calibration data */
+uint16_t low_us             = 0;
+uint16_t mid_us             = 1000;
+uint16_t hi_us              = 10000;
+
+/* Calibration mode */
+bool need_low_calibration   = false;
+bool need_mid_calibration   = false;
+bool need_hi_calibration    = false;
 
 /* PPI */
 static nrf_ppi_channel_t  m_ppi_channel_ec1;    /* EC_POWER_PIN toggle */
@@ -53,6 +66,20 @@ static const nrfx_timer_t     m_timer = NRFX_TIMER_INSTANCE(1);
 
 static void timer_handler(nrf_timer_event_t event_type, void * p_context) {}
 
+/************************************************************
+ * (Ground) ----\/\/\/-------|-------\/\/\/---- V_supply Pin
+ *            Test liquid    |     R Balance
+ *                      Analog Pin
+ ************************************************************/
+
+/* Initial state:
+ * POWER pin HIGH
+ * SINK pin LOW
+ *
+ * Wait 250us -> start SAADC -> wait 250us -> change pins polarity -> wait 250us
+ *
+ *
+ * */
 static void saadc_sampling_event_init(void)
 {
   ret_code_t err_code;
@@ -68,16 +95,16 @@ static void saadc_sampling_event_init(void)
   nrfx_timer_compare(&m_timer, NRF_TIMER_CC_CHANNEL0, ticks_saadc, true);
 
   /* setup m_timer for compare event to 400us, EC1 HIGHT, EC2 LOW */
-  uint32_t ticks_gpio_reverse = nrfx_timer_us_to_ticks(&m_timer, 400);
-  nrfx_timer_compare(&m_timer, NRF_TIMER_CC_CHANNEL1, ticks_gpio_reverse, true);
+  uint32_t ticks_gpio_reverse = nrfx_timer_us_to_ticks(&m_timer, 500);
+  nrfx_timer_extended_compare(&m_timer, NRF_TIMER_CC_CHANNEL1, ticks_gpio_reverse, NRF_TIMER_SHORT_COMPARE1_CLEAR_MASK, true);
 
   /* setup m_timer for compare event to 600us to leave reversed pin */
-  uint32_t ticks_gpio_leave = nrfx_timer_us_to_ticks(&m_timer, 500);
-  nrfx_timer_extended_compare(&m_timer,
-                              NRF_TIMER_CC_CHANNEL2,
-                              ticks_gpio_leave,
-                              NRF_TIMER_SHORT_COMPARE2_CLEAR_MASK,
-                              true);
+//  uint32_t ticks_gpio_leave = nrfx_timer_us_to_ticks(&m_timer, 1500);
+//  nrfx_timer_extended_compare(&m_timer,
+//                              NRF_TIMER_CC_CHANNEL2,
+//                              ticks_gpio_leave,
+//                              NRF_TIMER_SHORT_COMPARE2_CLEAR_MASK,
+//                              true);
 
   /* GPIOTE Init */
   if (!nrfx_gpiote_is_init())
@@ -91,7 +118,7 @@ static void saadc_sampling_event_init(void)
   err_code = nrfx_gpiote_out_init(EC_POWER_PIN, &config_ec1);
   APP_ERROR_CHECK(err_code);
 
-  /* GPIOTE Toggle task EC2, initial EC_SINK_PIN */
+  /* GPIOTE Toggle task EC_SINK_PIN, initial LOW */
   nrfx_gpiote_out_config_t config_ec2 = NRFX_GPIOTE_CONFIG_OUT_TASK_TOGGLE(false);
   err_code = nrfx_gpiote_out_init(EC_SINK_PIN, &config_ec2);
   APP_ERROR_CHECK(err_code);
@@ -108,26 +135,31 @@ static void saadc_sampling_event_init(void)
   err_code = nrfx_ppi_channel_assign(m_ppi_channel_saadc, timer_compare_event_ch0_addr, saadc_sample_task_addr);
   APP_ERROR_CHECK(err_code);
 
-  /* GPIOTE
-   * PPI Channel EC1 */
-  uint32_t timer_compare_event_ch1_addr     = nrfx_timer_event_address_get(&m_timer, NRF_TIMER_EVENT_COMPARE1);
-  uint32_t ec1_gpiote_task_addr             = nrfx_gpiote_out_task_addr_get(EC_POWER_PIN);
-
-  /* setup ppi channel so that timer compare event is triggering sample task in GPIOTE */
+  /* GPIOTE */
+  /* setup ppi channel for EC_POWER_PIN toggle */
   err_code = nrfx_ppi_channel_alloc(&m_ppi_channel_ec1);
   APP_ERROR_CHECK(err_code);
 
-  err_code = nrfx_ppi_channel_assign(m_ppi_channel_ec1, timer_compare_event_ch1_addr, ec1_gpiote_task_addr);
-  APP_ERROR_CHECK(err_code);
-
-  /* GPIOTE
-   * PPI Channel EC2 */
-  uint32_t ec2_gpiote_task_addr             = nrfx_gpiote_out_task_addr_get(EC_SINK_PIN);
-
-  /* setup ppi channel so that timer compare event is triggering sample task in GPIOTE */
+  /* setup ppi channel for EC_SINK_PIN toggle */
   err_code = nrfx_ppi_channel_alloc(&m_ppi_channel_ec2);
   APP_ERROR_CHECK(err_code);
 
+  /* EC_POWER_PIN task address */
+  uint32_t ec1_gpiote_task_addr             = nrfx_gpiote_out_task_addr_get(EC_POWER_PIN);
+
+  /* EC_SINK_PIN task address */
+  uint32_t ec2_gpiote_task_addr             = nrfx_gpiote_out_task_addr_get(EC_SINK_PIN);
+
+  /* toggle event
+   * EC_POWER_PIN -> LOW -> HI ....
+   * EC_SINK_PIN -> HI -> LOW .... */
+  uint32_t timer_compare_event_ch1_addr     = nrfx_timer_event_address_get(&m_timer, NRF_TIMER_EVENT_COMPARE1);
+
+  /* Assign toggle for EC_POWER_PIN on timer CC1 */
+  err_code = nrfx_ppi_channel_assign(m_ppi_channel_ec1, timer_compare_event_ch1_addr, ec1_gpiote_task_addr);
+  APP_ERROR_CHECK(err_code);
+
+  /* Assign toggle for EC_SINK_PIN on timer CC1 */
   err_code = nrfx_ppi_channel_assign(m_ppi_channel_ec2, timer_compare_event_ch1_addr, ec2_gpiote_task_addr);
   APP_ERROR_CHECK(err_code);
 
@@ -189,7 +221,21 @@ static void saadc_sampling_event_disable(void)
 
 static void saadc_callback(nrfx_saadc_evt_t const * p_event)
 {
-  if (p_event->type == NRFX_SAADC_EVT_DONE)
+  if (p_event->type == NRFX_SAADC_EVT_CALIBRATEDONE)
+  {
+    ret_code_t err_code;
+    err_code = nrfx_saadc_buffer_convert(m_buffer_pool[0], SAMPLES_IN_BUFFER);
+    APP_ERROR_CHECK(err_code);
+
+    err_code = nrfx_saadc_buffer_convert(m_buffer_pool[1], SAMPLES_IN_BUFFER);
+    APP_ERROR_CHECK(err_code);
+
+    NRF_LOG_INFO("EC SAADC calibration complete!");
+
+    saadc_sampling_event_enable();
+
+  }
+  else if (p_event->type == NRFX_SAADC_EVT_DONE)
   {
     ret_code_t err_code;
 
@@ -197,25 +243,39 @@ static void saadc_callback(nrfx_saadc_evt_t const * p_event)
     APP_ERROR_CHECK(err_code);
 
     int i;
+//    uint32_t temp = 0;
     for (i = 0; i < SAMPLES_IN_BUFFER; i++)
     {
-      NRF_LOG_INFO("RAW %d", p_event->data.done.p_buffer[i]);
+      NRF_LOG_INFO("EC RAW SAADC %d", p_event->data.done.p_buffer[i]);
+//      temp += p_event->data.done.p_buffer[i];
     }
 
-    ec_milli_volts = (uint16_t)ADC_RESULT_IN_MILLI_VOLTS(p_event->data.done.p_buffer[0]);
+//    temp = temp/(SAMPLES_IN_BUFFER/2);
+//    NRF_LOG_INFO("EC RAW Accumulated %d", temp);
+
+//    ec_milli_volts = (uint16_t)ADC_RESULT_IN_MILLI_VOLTS(temp);
+    ec_milli_volts = ADC_RESULT_IN_MILLI_VOLTS(p_event->data.done.p_buffer[2]);
+    ec_milli_volts += ADC_RESULT_IN_MILLI_VOLTS(p_event->data.done.p_buffer[4]);
+    ec_milli_volts += ADC_RESULT_IN_MILLI_VOLTS(p_event->data.done.p_buffer[6]);
+    ec_milli_volts = ec_milli_volts / 3;
 
     float volts = (float)ec_milli_volts/1000;
     NRF_LOG_INFO("EC volts " NRF_LOG_FLOAT_MARKER, NRF_LOG_FLOAT(volts));
     if (ec_milli_volts != 0) {
-      resistance = 1000 * (1 / ((3.30 / volts) - 1));
+      uint16_t battery = get_battery_milli_volts() - OPEN_CIRCUITS_MV_DROP;
+      resistance = 1000 / ((double)battery / ec_milli_volts - 1) - SINK_PIN_RESISTANCE;
     }
 
 
     NRF_LOG_INFO("EC milli volts %d", ec_milli_volts);
     NRF_LOG_INFO("Resistance %d", resistance);
+    NRF_LOG_INFO("Salinity RAW %d", get_raw_salinity());
+    NRF_LOG_INFO("Salinity     %d", get_salinity());
     set_sensor_ready(EC_SENSOR_READY);
 
     ec_sensor_deinit();
+
+    finish_ec_calibration();
   }
 
 }
@@ -242,18 +302,21 @@ static void ec_saadc_init(void)
   err_code = nrfx_saadc_channel_init(0, &channel_config);
   APP_ERROR_CHECK(err_code);
 
-  err_code = nrfx_saadc_buffer_convert(m_buffer_pool[0], SAMPLES_IN_BUFFER);
-  APP_ERROR_CHECK(err_code);
+  /* Start calibration */
+  nrfx_saadc_calibrate_offset();
 
-  err_code = nrfx_saadc_buffer_convert(m_buffer_pool[1], SAMPLES_IN_BUFFER);
-  APP_ERROR_CHECK(err_code);
+//  err_code = nrfx_saadc_buffer_convert(m_buffer_pool[0], SAMPLES_IN_BUFFER);
+//  APP_ERROR_CHECK(err_code);
+//
+//  err_code = nrfx_saadc_buffer_convert(m_buffer_pool[1], SAMPLES_IN_BUFFER);
+//  APP_ERROR_CHECK(err_code);
 }
 
 void ec_sensor_init(void)
 {
   ec_saadc_init();
   saadc_sampling_event_init();
-  saadc_sampling_event_enable();
+//  saadc_sampling_event_enable();
 }
 
 void ec_sensor_deinit(void)
@@ -287,113 +350,137 @@ void read_conductivity()
  * https://en.wikipedia.org/wiki/Conductivity_%28electrolytic%29
  * https://www.omega.co.uk/techref/ph-2.html
  *
- * Return temperature compensated value in uS, micro siemens
+ * Return temperature compensated value in uS/sm, micro siemens
  * */
-uint16_t get_raw_salinity() {
-  static int32_t temperature;
-  temperature = (int32_t)ntc_get_temperature();
-
-  float uS = 0.0f;
-  if (resistance > 0)
+double get_raw_salinity()
+{
+  double uS = 0.0f;
+  if (resistance > 0 && resistance < 65535)
   {
-    uS = (float)(1000000 * PROBE_K) / resistance; /* 1 μS/cm = 100 μS/m;  10^6 μS/cm = 10^3 mS/cm = 1 S/cm */
+    uS = (double)(1000000 * PROBE_K) / resistance; /* 1 μS/cm = 100 μS/m;  10^6 μS/cm = 10^3 mS/cm = 1 S/cm */
   }
-  uint16_t uS_compensated = uS + (uS * ((25 - temperature) * TEMPERATURE_COMP));
 
-  return uS_compensated;
+  return uS;
 }
 
 /* Return salinity in uS compensated by temp and corrected by one or two point calibration */
 uint16_t get_salinity()
 {
-  uint16_t raw_salinity = get_raw_salinity();
-  uint16_t true_salinity = 0;
+  double raw_salinity   = get_raw_salinity();
+  double temperature    = get_ntc_temperature();
+  double true_salinity  = 0;
 
-  storage_t cfg = {};
-  get_storage(&cfg);
-
-  if (cfg.ec_sensor_config.use_two_poit_calibration && cfg.ec_sensor_config.cal_hight && cfg.ec_sensor_config.cal_low)
+  /* use one point zero offcet */
+  if (raw_salinity <= 200)
   {
-    uint16_t reference_range = (cfg.ec_sensor_config.ref_hight_us - cfg.ec_sensor_config.ref_low_us);
-    uint16_t raw_range       = (cfg.ec_sensor_config.cal_hight - cfg.ec_sensor_config.cal_low);
+    raw_salinity = raw_salinity - low_us;
+  }
+  /* use two point calibration low_us (0uS) and mid_us (1000uS) */
+  else if (raw_salinity <= 2000)
+  {
+    double reference_range = 1000;
+    double raw_range       = mid_us - low_us;
 
-    true_salinity = (((raw_salinity - cfg.ec_sensor_config.cal_low) * reference_range) / raw_range) + cfg.ec_sensor_config.ref_low_us;
-  } else if (cfg.ec_sensor_config.use_one_poit_calibration && cfg.ec_sensor_config.cal_one_point) {
-    true_salinity = (uint16_t)(raw_salinity * cfg.ec_sensor_config.cal_one_point);
-  } else {
-    true_salinity = raw_salinity;
+    raw_salinity = (((raw_salinity - low_us) * reference_range) / raw_range) + 0;
+  }
+  /* use two point calibration mid_us (1000uS) and hi_us (10000uS) */
+  else if (raw_salinity <= 20000)
+  {
+    double reference_range = 9000;
+    double raw_range       = hi_us - mid_us;
+
+    raw_salinity = (((raw_salinity - mid_us) * reference_range) / raw_range) + 1000;
   }
 
-  return true_salinity;
+  /* temperature compensation */
+  true_salinity = raw_salinity + (raw_salinity * ((25 - temperature) * TEMPERATURE_COMP));
+  return (uint16_t)true_salinity;
 }
 
-/* 1000 uS calibration
- * 491 mg/L NaCl
- * */
-void do_one_point_calibration()
+/* calibration: initial step */
+void do_ec_calibration(ec_calibration_mode_t mode)
 {
-  uint16_t current_uS = get_raw_salinity();
-  storage_t cfg = {};
-  get_storage(&cfg);
+  /* read all sensors to proper EC calculation */
+  read_sensor_timer_stop();
+  read_sensor_timer_start(true);
 
-  static int32_t temperature;
-  ret_code_t err_code;
-  err_code = sd_temp_get(&temperature); /* in points of 0.25`C, need devise by 4 */
-  APP_ERROR_CHECK(err_code);
+  need_low_calibration = false;
+  need_mid_calibration = false;
+  need_hi_calibration  = false;
 
-  temperature = temperature / 4;
-
-  float ref_compensated = ONE_POINT_CALIBRATION_SOLUTION_US + (ONE_POINT_CALIBRATION_SOLUTION_US * ((25 - temperature) * TEMPERATURE_COMP));
-  cfg.ec_sensor_config.use_one_poit_calibration = true;
-  cfg.ec_sensor_config.cal_one_point = (current_uS - ref_compensated) / current_uS;
-
-  NRF_LOG_INFO("One Point EC calibration: CUR    (uS x 100) %d", (uint16_t)current_uS * 100);
-  NRF_LOG_INFO("One Point EC calibration: REF    (uS x 100) %d", (uint16_t)ref_compensated * 100);
-  NRF_LOG_INFO("One Point EC calibration: Offset (uS x 100) %d", (int16_t)cfg.ec_sensor_config.cal_one_point * 100);
+  switch (mode)
+  {
+    case EC_CAL_LOW:
+      need_low_calibration = true;
+      led_indication_set(LED_INDICATE_FAST_RED);
+      break;
+    case EC_CAL_MID:
+      need_mid_calibration = true;
+      led_indication_set(LED_INDICATE_FAST_GREEN);
+      break;
+    case EC_CAL_HI:
+      need_hi_calibration  = true;
+      led_indication_set(LED_INDICATE_FAST_BLUE);
+      break;
+    default:
+      break;
+  }
 }
 
-/* 1000 uS calibration */
-void do_two_point_low_calibration()
+/* calibration: final step
+ * ToDo: temperature normalisation */
+void finish_ec_calibration()
 {
-  uint16_t current_uS = get_raw_salinity();
-  storage_t cfg = {};
-  get_storage(&cfg);
+  double true_salinity  = 0;
+  double raw_salinity  = get_raw_salinity();
+  double temperature = get_ntc_temperature();
 
-  static int32_t temperature;
-  ret_code_t err_code;
-  err_code = sd_temp_get(&temperature); /* in points of 0.25`C, need devise by 4 */
-  APP_ERROR_CHECK(err_code);
+  /* temperature compensation */
+  true_salinity = raw_salinity + (raw_salinity * ((25 - temperature) * TEMPERATURE_COMP));
 
-  temperature = temperature / 4;
+  if (need_low_calibration)
+  {
+    low_us = true_salinity;
+    need_low_calibration = false;
+    NRF_LOG_INFO("EC Low Calibration new %d uS", low_us);
 
-  float ref_compensated = ONE_POINT_CALIBRATION_SOLUTION_US + (ONE_POINT_CALIBRATION_SOLUTION_US * ((25 - temperature) * TEMPERATURE_COMP));
-  cfg.ec_sensor_config.use_one_poit_calibration = true;
-  cfg.ec_sensor_config.cal_one_point = (current_uS - ref_compensated) / current_uS;
+    /* save to nvram */
+    set_settings(low_us, mid_us, hi_us);
+    led_indication_set(LED_INDICATE_SUCCESS);
+  }
 
-  NRF_LOG_INFO("One Point EC calibration: CUR    (uS x 100) %d", (uint16_t)current_uS * 100);
-  NRF_LOG_INFO("One Point EC calibration: REF    (uS x 100) %d", (uint16_t)ref_compensated * 100);
-  NRF_LOG_INFO("One Point EC calibration: Offset (uS x 100) %d", (int16_t)cfg.ec_sensor_config.cal_one_point * 100);
+  else if (need_mid_calibration)
+  {
+    mid_us = true_salinity;
+    need_mid_calibration = false;
+    NRF_LOG_INFO("EC Mid Calibration new %d uS", mid_us);
+
+    /* save to nvram */
+    set_settings(low_us, mid_us, hi_us);
+    led_indication_set(LED_INDICATE_SUCCESS);
+  }
+
+  else if (need_hi_calibration)
+  {
+    hi_us = true_salinity;
+    need_hi_calibration = false;
+    NRF_LOG_INFO("EC Hi Calibration new %d uS", hi_us);
+
+    /* save to nvram */
+    set_settings(low_us, mid_us, hi_us);
+    led_indication_set(LED_INDICATE_SUCCESS);
+  }
 }
 
-/* 2000 uS calibration */
-void do_two_point_hight_calibration()
+/* return true if calibrating */
+uint8_t get_ec_calibration_status()
 {
-  uint16_t current_uS = get_raw_salinity();
-  storage_t cfg = {};
-  get_storage(&cfg);
+  return need_low_calibration || need_mid_calibration || need_hi_calibration;
+}
 
-  static int32_t temperature;
-  ret_code_t err_code;
-  err_code = sd_temp_get(&temperature); /* in points of 0.25`C, need devise by 4 */
-  APP_ERROR_CHECK(err_code);
-
-  temperature = temperature / 4;
-
-  float ref_compensated = ONE_POINT_CALIBRATION_SOLUTION_US + (ONE_POINT_CALIBRATION_SOLUTION_US * ((25 - temperature) * TEMPERATURE_COMP));
-  cfg.ec_sensor_config.use_one_poit_calibration = true;
-  cfg.ec_sensor_config.cal_one_point = (current_uS - ref_compensated) / current_uS;
-
-  NRF_LOG_INFO("One Point EC calibration: CUR    (uS x 100) %d", (uint16_t)current_uS * 100);
-  NRF_LOG_INFO("One Point EC calibration: REF    (uS x 100) %d", (uint16_t)ref_compensated * 100);
-  NRF_LOG_INFO("One Point EC calibration: Offset (uS x 100) %d", (int16_t)cfg.ec_sensor_config.cal_one_point * 100);
+void set_ec_calibration(uint16_t low, uint16_t mid, uint16_t hi)
+{
+  if (low) { low_us = low; }
+  if (mid) { mid_us = mid; }
+  if (hi) { hi_us = hi; }
 }

@@ -12,3 +12,5 @@ _*.*
 _*/
 .idea/*.*
 log.log
+_build
+DFU/bootloader/_build/

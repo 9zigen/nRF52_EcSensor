@@ -7,6 +7,6 @@
 
 void ntc_sensor_deinit(void);
 void read_ntc_sensor();
-double ntc_get_temperature();
+double get_ntc_temperature();
 
 #endif //PHSENSOR_NTC_TEMPERATURE_SENSOR_H

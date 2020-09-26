@@ -8,10 +8,11 @@
 #include <sensors/include/sensors.h>
 
 void timers_init(void);
-void advertising_update_timer_start(void);
-void advertising_update_timer_stop();
 
-/* Always running slow periodical sensor reading */
+/* Set refresh sensors interval */
+void set_scan_interval(uint16_t new_interval);
+
+/* Periodical sensor reading */
 void read_sensor_timer_start(bool fast);
 void read_sensor_timer_stop(void);
 

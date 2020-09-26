@@ -14,5 +14,6 @@ void adv_manuf_data_update();
 /* update characteristics */
 void update_sensors_service(sensor_t sensor_id);
 
+void delete_bonds(void);
 
 #endif //PROJECT_BLE_H

@@ -55,15 +55,26 @@ static void on_write(ble_cus_t * p_cus, ble_evt_t const * p_ble_evt)
   // Status Value Characteristic Written to.
   if (p_evt_write->handle == p_cus->status_handles.value_handle)
   {
-    // ToDO: EC Dual Poin calibration
+    // ToDO: EC Dual Point calibration
     if(p_evt_write->data != NULL)
     {
       NRF_LOG_INFO("New Value received");
       NRF_LOG_INFO("0x%X", p_evt_write->data[0]);
-      if (*p_evt_write->data == 1) {
-        evt.evt_type = BLE_CUS_EVT_CALIBRATE_CONDUCTIVITY_1000_US;
-        NRF_LOG_INFO("CUS EVT: BLE_CUS_EVT_CALIBRATE_CONDUCTIVITY_1000_US\r\n");
-        do_one_point_calibration();
+      switch (*p_evt_write->data) {
+        case 1:
+          evt.evt_type = BLE_CUS_EVT_CALIBRATE_CONDUCTIVITY_0_US;
+          NRF_LOG_INFO("CUS EVT: BLE_CUS_EVT_CALIBRATE_CONDUCTIVITY_0_US\r\n");
+          break;
+
+        case 2:
+          evt.evt_type = BLE_CUS_EVT_CALIBRATE_CONDUCTIVITY_1000_US;
+          NRF_LOG_INFO("CUS EVT: BLE_CUS_EVT_CALIBRATE_CONDUCTIVITY_1000_US\r\n");
+          break;
+
+        case 3:
+          evt.evt_type = BLE_CUS_EVT_CALIBRATE_CONDUCTIVITY_10000_US;
+          NRF_LOG_INFO("CUS EVT: BLE_CUS_EVT_CALIBRATE_CONDUCTIVITY_10000_US\r\n");
+          break;
       }
       p_cus->evt_handler(p_cus, &evt);
     }
@@ -93,29 +104,6 @@ static void on_write(ble_cus_t * p_cus, ble_evt_t const * p_ble_evt)
     }
   }
 
-  // Check if the Humidity value CCCD is written to and that the value is the appropriate length, i.e 2 bytes.
-  if ((p_evt_write->handle == p_cus->humidity_handles.cccd_handle)
-      && (p_evt_write->len == 2)
-      )
-  {
-    // CCCD written, call application event handler
-    if (p_cus->evt_handler != NULL)
-    {
-      ble_cus_evt_t evt;
-
-      if (ble_srv_is_notification_enabled(p_evt_write->data))
-      {
-        evt.evt_type = BLE_CUS_EVT_HUMIDITY_NOTIFICATION_ENABLED;
-      }
-      else
-      {
-        evt.evt_type = BLE_CUS_EVT_HUMIDITY_NOTIFICATION_DISABLED;
-      }
-      // Call the application event handler.
-      p_cus->evt_handler(p_cus, &evt);
-    }
-  }
-
   // Check if the Salinity value CCCD is written to and that the value is the appropriate length, i.e 2 bytes.
   if ((p_evt_write->handle == p_cus->salinity_handles.cccd_handle)
       && (p_evt_write->len == 2)
@@ -133,52 +121,6 @@ static void on_write(ble_cus_t * p_cus, ble_evt_t const * p_ble_evt)
       else
       {
         evt.evt_type = BLE_CUS_EVT_SALINITY_NOTIFICATION_DISABLED;
-      }
-      // Call the application event handler.
-      p_cus->evt_handler(p_cus, &evt);
-    }
-  }
-
-  // Check if the Salinity value CCCD is written to and that the value is the appropriate length, i.e 2 bytes.
-  if ((p_evt_write->handle == p_cus->soil_handles.cccd_handle)
-      && (p_evt_write->len == 2)
-      )
-  {
-    // CCCD written, call application event handler
-    if (p_cus->evt_handler != NULL)
-    {
-      ble_cus_evt_t evt;
-
-      if (ble_srv_is_notification_enabled(p_evt_write->data))
-      {
-        evt.evt_type = BLE_CUS_EVT_SOIL_NOTIFICATION_ENABLED;
-      }
-      else
-      {
-        evt.evt_type = BLE_CUS_EVT_SOIL_NOTIFICATION_DISABLED;
-      }
-      // Call the application event handler.
-      p_cus->evt_handler(p_cus, &evt);
-    }
-  }
-
-  // Check if the Light value CCCD is written to and that the value is the appropriate length, i.e 2 bytes.
-  if ((p_evt_write->handle == p_cus->light_handles.cccd_handle)
-      && (p_evt_write->len == 2)
-      )
-  {
-    // CCCD written, call application event handler
-    if (p_cus->evt_handler != NULL)
-    {
-      ble_cus_evt_t evt;
-
-      if (ble_srv_is_notification_enabled(p_evt_write->data))
-      {
-        evt.evt_type = BLE_CUS_EVT_LIGHT_NOTIFICATION_ENABLED;
-      }
-      else
-      {
-        evt.evt_type = BLE_CUS_EVT_LIGHT_NOTIFICATION_DISABLED;
       }
       // Call the application event handler.
       p_cus->evt_handler(p_cus, &evt);

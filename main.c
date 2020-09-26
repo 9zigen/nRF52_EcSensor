@@ -63,14 +63,16 @@
 #include "nrf_log_ctrl.h"
 #include "nrf_log_default_backends.h"
 
+#include "button.h"
 #include "ble_services.h"
 #include "timers.h"
 #include "sensors.h"
 #include "pwm.h"
-#include "storage.h"
 #include <boards.h>
-#include <include/button.h>
+#include <ble_dfu.h>
+#include "ec_sensor.h"
 #include "bat_sensor.h"
+#include "storage.h"
 
 #define FPU_EXCEPTION_MASK               0x0000009F                      //!< FPU exception mask used to clear exceptions in FPSCR register.
 #define FPU_FPSCR_REG_STACK_OFF          0x40                            //!< Offset of FPSCR register stacked during interrupt handling in FPU part stack.
@@ -135,15 +137,94 @@ void power_management_init(void)
   APP_ERROR_CHECK(err_code);
 }
 
+/* power management */
+static bool app_shutdown_handler(nrf_pwr_mgmt_evt_t event)
+{
+  switch (event)
+  {
+    case NRF_PWR_MGMT_EVT_PREPARE_DFU:
+      NRF_LOG_INFO("Power management wants to reset to DFU mode\r\n");
+      // Change this code to tailor to your reset strategy.
+      // Returning false here means that the device is not ready to jump to DFU mode yet.
+      //
+      // Here is an example using a variable to delay resetting the device:
+//      if (!m_ready_for_reset)
+//      {
+//        return false;
+//      }
+      break;
+
+    default:
+      // Implement any of the other events available from the power management module:
+      //      -NRF_PWR_MGMT_EVT_PREPARE_SYSOFF
+      //      -NRF_PWR_MGMT_EVT_PREPARE_WAKEUP
+      //      -NRF_PWR_MGMT_EVT_PREPARE_RESET
+      return true;
+  }
+  NRF_LOG_INFO("Power management allowed to reset to DFU mode\r\n");
+  return true;
+}
+
+NRF_PWR_MGMT_HANDLER_REGISTER(app_shutdown_handler, 0);
+
+static void button_action_handler(button_state_t state)
+{
+  static uint8_t calibration_mode = 0;
+  ec_calibration_mode_t calibration[] = {EC_CAL_LOW, EC_CAL_MID, EC_CAL_HI};
+
+  switch (state)
+  {
+    case RELEASED:
+      if (get_ec_calibration_status())
+      {
+        NRF_LOG_INFO("BTN SHORT PRESS, switch calibration_mode %u", calibration_mode);
+        do_ec_calibration(calibration[calibration_mode++]);
+
+        if (calibration_mode == 3)
+          calibration_mode = 0;
+      } else {
+        NRF_LOG_INFO("BTN SHORT PRESS, start read sensors");
+
+        /* Start read sensor timer */
+        read_sensor_timer_stop();
+        read_sensor_timer_start(true);
+      }
+      break;
+
+    case LONG_PRESSED:
+      NRF_LOG_INFO("BTN LONG PRESS, is_calibrating? %u", get_ec_calibration_status());
+      if (!get_ec_calibration_status())
+      {
+        calibration_mode = 0;
+        NRF_LOG_INFO("start calibration_mode %u", calibration_mode);
+        do_ec_calibration(calibration[calibration_mode++]);
+      }
+      break;
+
+    case LONG_LONG_PRESSED:
+      NRF_LOG_INFO("BTN LONG LONG PRESS, factory defaults");
+      factory_settings();
+      break;
+
+    default:
+      break;
+  }
+}
+
 int main(void)
 {
   APP_ERROR_CHECK(NRF_LOG_INIT(NULL));
   NRF_LOG_DEFAULT_BACKENDS_INIT();
 
   log_init();
+
+  // Initialize the async SVCI interface to bootloader before any interrupts are enabled.
+  ret_code_t err_code;
+  err_code = ble_dfu_buttonless_async_svci_init();
+  APP_ERROR_CHECK(err_code);
+
   timers_init();
   init_clock();
-  init_storage();
   init_led_pwm();
   power_management_init();
 
@@ -153,14 +234,23 @@ int main(void)
   /* Welcome Message */
   NRF_LOG_INFO("Start EcSensor App");
 
-  /* Init BLE services */
-  init_ble();
+  /* Init Storage */
+  if (storage_init() > 0)
+  {
+    settings_t * settings = get_settings();
+    set_ec_calibration(settings->low_us, settings->mid_us, settings->hi_us);
+    set_scan_interval(settings->scan_interval);
+  }
 
-  /* Init Button press event */
+  /* Init Button */
   button_init();
+  set_button_action_handler(button_action_handler);
 
   /* Start read sensor timer */
   read_sensor_timer_start(true);
+
+  /* Init BLE services */
+  init_ble();
 
   // Enable FPU interrupt
   NVIC_SetPriority(FPU_IRQn, APP_IRQ_PRIORITY_LOWEST);

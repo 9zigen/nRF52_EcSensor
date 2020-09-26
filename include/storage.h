@@ -1,35 +1,23 @@
 /***
-** Created by Aleksey Volkov on 25/11/2018.
+** Created by Aleksey Volkov on 18.03.2020.
 ***/
 
-#ifndef SOILSENSOR_STORAGE_H
-#define SOILSENSOR_STORAGE_H
+#ifndef PHSENSOR_STORAGE_H
+#define PHSENSOR_STORAGE_H
 
-
-#include "nrfx.h"
-
+/* 4 bytes aligned */
 typedef struct {
-  uint16_t dry_mv;
-  uint16_t normal_mv;
-  uint16_t weet_mv;
-} soil_sensor_config_t;
+  uint32_t magic;
+  uint32_t version;
+  uint16_t low_us;        /* 0 uS/sm solution (pure H20) for range 0 - 200 uS */
+  uint16_t mid_us;        /* 1000 uS/sm solution 491 mg/L NaCl for range 0 - 2000 uS */
+  uint16_t hi_us;         /* ToDo: 10000 uS/sm solution for range 0 - 20000 uS */
+  uint16_t scan_interval;
+} settings_t;
 
-typedef struct {
-  uint16_t ref_low_us;
-  uint16_t ref_hight_us;
-  uint16_t cal_hight;
-  uint16_t cal_low;
-  float cal_one_point;
-  bool use_one_poit_calibration;
-  bool use_two_poit_calibration;
-} ec_sensor_config_t;
+uint16_t storage_init();
+void set_settings(uint16_t low, uint16_t mid, uint16_t hi);
+void factory_settings();
+settings_t * get_settings();
 
-typedef struct {
-  ec_sensor_config_t ec_sensor_config;
-  soil_sensor_config_t soil_sensor_config;
-} storage_t;
-
-void init_storage();
-void get_storage(storage_t * config);
-
-#endif //SOILSENSOR_STORAGE_H
+#endif //PHSENSOR_STORAGE_H

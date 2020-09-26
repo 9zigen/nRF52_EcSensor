@@ -86,15 +86,6 @@ void read_sensors_timer_handler(void *p_context)
 
 }
 
-void update_advertising_timer_handler(void *p_context)
-{
-  UNUSED_PARAMETER(p_context);
-  if (all_sensors_ready())
-  {
-    advertising_update();
-  }
-}
-
 /* update characteristics timer handler */
 void update_characteristics_timer_handler(void *p_context) {
   UNUSED_PARAMETER(p_context);

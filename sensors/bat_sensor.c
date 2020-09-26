@@ -168,7 +168,7 @@ static void saadc_callback(nrf_drv_saadc_evt_t const * p_event)
     int i;
     for (i = 0; i < SAMPLES_IN_BUFFER; i++)
     {
-      NRF_LOG_INFO("BAT SAADC RAW   %d mv: %d", p_event->data.done.p_buffer[i], ADC_RESULT_IN_MILLI_VOLTS(p_event->data.done.p_buffer[1]));
+      NRF_LOG_INFO("BAT SAADC RAW   %d mv: %d", p_event->data.done.p_buffer[i], ADC_RESULT_IN_MILLI_VOLTS(p_event->data.done.p_buffer[i]));
     }
 
     /* use only second value */

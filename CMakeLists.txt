@@ -2,9 +2,9 @@ project(EcSensor C ASM)
 cmake_minimum_required(VERSION 3.7)
 
 # specify the cross compiler
-set(CMAKE_C_COMPILER "arm-none-eabi-gcc")
-set(CMAKE_CXX_COMPILER "arm-none-eabi-c++")
-set(CMAKE_ASM_COMPILER "arm-none-eabi-gcc")
+set(CMAKE_C_COMPILER arm-none-eabi-gcc)
+set(CMAKE_CXX_COMPILER arm-none-eabi-c++)
+set(CMAKE_ASM_COMPILER arm-none-eabi-gcc)
 
 set(AS arm-none-eabi-as)
 set(AR arm-none-eabi-ar)
@@ -12,7 +12,7 @@ set(OBJCOPY arm-none-eabi-objcopy)
 set(OBJDUMP arm-none-eabi-objdump)
 set(SIZE arm-none-eabi-size)
 
-SET(SDK_ROOT ../)
+SET(SDK_ROOT ../../../../SDK/nRF5_SDK_16.0.0)
 
 set(CMAKE_OSX_SYSROOT "/")
 set(CMAKE_OSX_DEPLOYMENT_TARGET "")
@@ -28,7 +28,8 @@ list(APPEND USER_SOURCES
     "${SDK_ROOT}/components/libraries/util/app_error_handler_gcc.c"
     "${SDK_ROOT}/components/libraries/util/app_error_weak.c"
     "${SDK_ROOT}/components/libraries/scheduler/app_scheduler.c"
-    "${SDK_ROOT}/components/libraries/timer/app_timer.c"
+    "${SDK_ROOT}/components/libraries/timer/app_timer2.c"
+    "${SDK_ROOT}/components/libraries/timer/drv_rtc.c"
     "${SDK_ROOT}/components/libraries/util/app_util_platform.c"
     "${SDK_ROOT}/external/cifra_AES128-EAX/blockwise.c"
     "${SDK_ROOT}/external/cifra_AES128-EAX/cifra_cmac.c"
@@ -64,13 +65,14 @@ list(APPEND USER_SOURCES
     "${SDK_ROOT}/integration/nrfx/legacy/nrf_drv_uart.c"
     "${SDK_ROOT}/modules/nrfx/drivers/src/nrfx_clock.c"
     "${SDK_ROOT}/modules/nrfx/drivers/src/nrfx_gpiote.c"
-    "${SDK_ROOT}/modules/nrfx/drivers/src/nrfx_power_clock.c"
+    "${SDK_ROOT}/modules/nrfx/drivers/src/nrfx_power.c"
     "${SDK_ROOT}/modules/nrfx/drivers/src/prs/nrfx_prs.c"
     "${SDK_ROOT}/modules/nrfx/drivers/src/nrfx_rng.c"
     "${SDK_ROOT}/modules/nrfx/drivers/src/nrfx_uart.c"
     "${SDK_ROOT}/modules/nrfx/drivers/src/nrfx_uarte.c"
     "${SDK_ROOT}/modules/nrfx/drivers/src/nrfx_ppi.c"
     "${SDK_ROOT}/modules/nrfx/drivers/src/nrfx_timer.c"
+    "${SDK_ROOT}/modules/nrfx/drivers/src/nrfx_rtc.c"
     "${SDK_ROOT}/components/libraries/crypto/backend/cifra/cifra_backend_aes_aead.c"
     "${SDK_ROOT}/components/libraries/crypto/backend/nrf_hw/nrf_hw_backend_init.c"
     "${SDK_ROOT}/components/libraries/crypto/backend/nrf_hw/nrf_hw_backend_rng.c"
@@ -223,12 +225,19 @@ list(APPEND USER_SOURCES
     "${SDK_ROOT}/external/mbedtls/library/x509_crt.c"
     "${SDK_ROOT}/external/mbedtls/library/x509_csr.c"
     "${SDK_ROOT}/external/mbedtls/library/xtea.c"
+    "${SDK_ROOT}/components/libraries/sortlist/nrf_sortlist.c"
     "${SDK_ROOT}/modules/nrfx/mdk/system_nrf52.c"
     "${SDK_ROOT}/external/utf_converter/utf.c"
     "${SDK_ROOT}/components/ble/ble_db_discovery/ble_db_discovery.c"
+    "${SDK_ROOT}/components/ble/nrf_ble_gq/nrf_ble_gq.c"
     "${SDK_ROOT}/modules/nrfx/drivers/src/nrfx_saadc.c"
     "${SDK_ROOT}/modules/nrfx/drivers/src/nrfx_pwm.c"
+    "${SDK_ROOT}/components/libraries/bootloader/dfu/nrf_dfu_svci.c"
+    "${SDK_ROOT}/components/ble/ble_services/ble_dfu/ble_dfu.c"
+    "${SDK_ROOT}/components/ble/ble_services/ble_dfu/ble_dfu_bonded.c"
+    "${SDK_ROOT}/components/ble/ble_services/ble_dfu/ble_dfu_unbonded.c"
     "main.c"
+    "storage.c"
     "bsp/custom_board.h"
     "pwm.c"
     "ble_cus.c"
@@ -265,7 +274,6 @@ include_directories(
     "${SDK_ROOT}/components/nfc/ndef/text"
     "${SDK_ROOT}/components/libraries/mutex"
     "${SDK_ROOT}/components/libraries/gpiote"
-    "${SDK_ROOT}/components/libraries/bootloader/ble_dfu"
     "${SDK_ROOT}/components/nfc/ndef/connection_handover/common"
     "${SDK_ROOT}/components/boards"
     "${SDK_ROOT}/components/nfc/ndef/generic/record"
@@ -308,6 +316,8 @@ include_directories(
     "${SDK_ROOT}/components/libraries/low_power_pwm"
     "${SDK_ROOT}/components/nfc/ndef/conn_hand_parser/ble_oob_advdata_parser"
     "${SDK_ROOT}/components/ble/ble_services/ble_dfu"
+    "${SDK_ROOT}/components/libraries/bootloader/ble_dfu"
+    "${SDK_ROOT}/components/libraries/bootloader/ble"
     "${SDK_ROOT}/external/fprintf"
     "${SDK_ROOT}/components/libraries/svc"
     "${SDK_ROOT}/components/libraries/atomic"
@@ -396,6 +406,8 @@ include_directories(
     "${SDK_ROOT}/components/ble/ble_db_discovery"
     "${SDK_ROOT}/components/ble/ble_link_ctx_manager/"
     "${SDK_ROOT}/modules/nrfx/drivers/include"
+    "${SDK_ROOT}/components/ble/nrf_ble_gq"
+    "${SDK_ROOT}/components/libraries/bootloader"
     "${CMAKE_CURRENT_SOURCE_DIR}"
     "${CMAKE_CURRENT_SOURCE_DIR}/include"
     "${CMAKE_CURRENT_SOURCE_DIR}/bsp"
@@ -416,6 +428,9 @@ include_directories("pca10040/s132/config")
 include_directories("${SDK_ROOT}/modules/nrfx/mdk")
 
 add_definitions(-DBLE_STACK_SUPPORT_REQD
+    -DAPP_TIMER_V2
+    -DAPP_TIMER_V2_RTC1_ENABLED
+    -DBL_SETTINGS_ACCESS_ONLY
     -DBOARD_CUSTOM
     -DCONFIG_GPIO_AS_PINRESET
     -DFLOAT_ABI_HARD
@@ -424,6 +439,8 @@ add_definitions(-DBLE_STACK_SUPPORT_REQD
     -DNRF_CRYPTO_MAX_INSTANCE_COUNT=1
     -DNRF_SD_BLE_API_VERSION=6
     -DS132
+    -DNRF_DFU_SVCI_ENABLED
+    -DNRF_DFU_TRANSPORT_BLE=1
     -DSOFTDEVICE_PRESENT
     -DSWI_DISABLE0
     -DuECC_ENABLE_VLI_API=0
@@ -466,7 +483,7 @@ set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,-Map=${PROJECT_BINARY_
 
 set(HEX_FILE ${PROJECT_BINARY_DIR}/${PROJECT_NAME}.hex)
 set(BIN_FILE ${PROJECT_BINARY_DIR}/${PROJECT_NAME}.bin)
-set(SOFT_DEVICE ../../components/softdevice/s132/hex/s132_nrf52_6.1.0_softdevice.hex)
+set(SOFT_DEVICE ../../components/softdevice/s132/hex/s132_nrf52_7.0.1_softdevice.hex)
 set(FIRMWARE ${PROJECT_NAME}_softdevice.hex)
 message( ${SOFT_DEVICE} )
 
