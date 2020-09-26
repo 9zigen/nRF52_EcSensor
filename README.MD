@@ -14,3 +14,8 @@
 7. Bootloader and Firmware validation
 -  `` cd DFU/bootloader ``
 -  `` make batch ``
+
+For security reasons, generate a new private/public key in the DFU folder
+- ``cd DFU/bootloader``
+- ``nrfutil keys generate private_key.pem``
+- ``nrfutil keys display --format code --out_file "public_key.c" --key pk private_key.pem``
